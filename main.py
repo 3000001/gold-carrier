@@ -325,7 +325,13 @@ def download_with_retry(symbol, period, interval):
 
 
 def get_gold_data():
-    df1 = download_with_retry(GOLD_SYMBOL, period="1d", interval="1m")
+    """
+    ดึงข้อมูล GOLD จาก Yahoo Finance
+
+    1M ใช้ย้อนหลัง 5 วันแทน 1 วัน เพื่อให้มี historical bars สำรอง
+    ในช่วงตลาดปิด/วันหยุดที่ Yahoo อาจคืน no price data found สำหรับ period=1d
+    """
+    df1 = download_with_retry(GOLD_SYMBOL, period="5d", interval="1m")
     df15 = download_with_retry(GOLD_SYMBOL, period="5d", interval="15m")
     daily = download_with_retry(GOLD_SYMBOL, period="6mo", interval="1d")
 
