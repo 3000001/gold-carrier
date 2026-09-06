@@ -1,17 +1,21 @@
+import os
 import requests
 
-CHANNEL_ACCESS_TOKEN = "MmxmSJrLjrZE4tLJsAI1By4S0lfCqk3+AfqC9JzJv018TT1C57nNTQ95fy2qtK5B3qxIwIpKV1lWHdVsXSsPs3gwzLE8MyH93t0nAxHLK8hvR/+d4FfNrkfxUz9uwyB6TCkGFYt38qHi+ew7CNJxngdB04t89/1O/w1cDnyilFU="
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 
-def send_line_message(user_id, message):
+PAPA_USER_ID = "U36050f212bd1271eca08a2a238e0e461"
+
+
+def send_line(message):
     url = "https://api.line.me/v2/bot/message/push"
 
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {CHANNEL_ACCESS_TOKEN}"
+        "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"
     }
 
     data = {
-        "to": user_id,
+        "to": PAPA_USER_ID,
         "messages": [
             {
                 "type": "text",
@@ -20,7 +24,18 @@ def send_line_message(user_id, message):
         ]
     }
 
-    response = requests.post(url, headers=headers, json=data)
+    response = requests.post(
+        url,
+        headers=headers,
+        json=data,
+        timeout=15
+    )
 
-    print("LINE Status:", response.status_code)
-    print("LINE Response:", response.text)
+    print("LINE STATUS:", response.status_code)
+    print("LINE RESPONSE:", response.text)
+
+    return response.status_code == 200
+
+
+if __name__ == "__main__":
+    send_line("✅ ทดสอบ Trading Alert\nเชื่อมต่อ LINE ของปาป้าสำเร็จ")
