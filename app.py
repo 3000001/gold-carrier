@@ -2,9 +2,14 @@ from flask import Flask, request
 
 app = Flask(__name__)
 
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    data = request.get_json()
+@app.route("/test-line", methods=["GET"])
+def test_line():
+    ok = send_line("✅ ทดสอบ Trading Alert\nเชื่อมต่อ LINE ของปาป้าสำเร็จ")
+
+    if ok:
+        return "LINE SENT", 200
+    else:
+        return "LINE FAILED", 500
 
     print("FULL EVENT", data, flush=True)
     events = data.get("events", [])
