@@ -1,8 +1,19 @@
-from line_notify import send_line_message
+from flask import Flask, request
 
-USER_ID = "ki.ser"
+app = Flask(__name__)
 
-send_line_message(
-    USER_ID,
-    "🟡 ทดสอบส่งข้อความจาก Gold Bot ครับปาป้า"
-)
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.get_json()
+
+    print("===== LINE WEBHOOK =====", flush=True)
+    print(data, flush=True)
+
+    if data and "events" in data:
+        for event in data["events"]:
+            source = event.get("source", {})
+            user_id = source.get("userId")
+
+            print("USER ID =", user_id, flush=True)
+
+    return "OK", 200
