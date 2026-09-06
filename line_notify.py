@@ -14,21 +14,18 @@ LINE_USER_IDS = [
 def send_line(message):
     """
     ส่งข้อความ LINE ไปยัง User ID ทุกคนที่กำหนดไว้ใน LINE_USER_IDS
-
-    Render Environment ตัวอย่าง:
-    LINE_USER_IDS=Uxxxxx,Uyyyyy
     """
 
     if not LINE_CHANNEL_ACCESS_TOKEN:
-        print("❌ ไม่มี LINE_CHANNEL_ACCESS_TOKEN")
+        print("❌ ไม่มี LINE_CHANNEL_ACCESS_TOKEN", flush=True)
         return False
 
     if not LINE_USER_IDS:
-        print("❌ ไม่มี LINE_USER_IDS")
+        print("❌ ไม่มี LINE_USER_IDS", flush=True)
         return False
 
     if not message:
-        print("❌ ไม่มีข้อความที่จะส่ง")
+        print("❌ ไม่มีข้อความที่จะส่ง", flush=True)
         return False
 
     url = "https://api.line.me/v2/bot/message/push"
@@ -49,6 +46,7 @@ def send_line(message):
                     "text": str(message),
                 }
             ],
+            "notificationDisabled": False,
         }
 
         try:
@@ -87,9 +85,9 @@ def send_line(message):
 
 
 if __name__ == "__main__":
-    print(f"👥 LINE recipients configured: {len(LINE_USER_IDS)}")
+    print(f"👥 LINE recipients configured: {len(LINE_USER_IDS)}", flush=True)
 
     send_line(
-        "✅ ทดสอบ Trading Alert\n"
-        "เชื่อมต่อ LINE สำเร็จ"
+        "🔔 ทดสอบ Trading Alert\n"
+        "เปิดการแจ้งเตือน LINE แล้ว"
     )

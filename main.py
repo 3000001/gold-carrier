@@ -137,6 +137,7 @@ def send_line(message):
                     "text": message
                 }
             ],
+            "notificationDisabled": False,
         }
 
         try:
