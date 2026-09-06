@@ -565,6 +565,15 @@ def health():
     return {"status": "ok", "service": "Gold Trading Alert"}, 200
 
 
+@app.route("/test-line", methods=["GET"])
+def test_line():
+    """ยิงข้อความทดสอบเข้า LINE เพื่อเช็คว่าตั้งค่า token/user id ถูกต้อง"""
+    ok = send_line("✅ ทดสอบ Trading Alert\nเชื่อมต่อ LINE สำเร็จ")
+    if ok:
+        return "LINE SENT", 200
+    return "LINE FAILED", 500
+
+
 # ============================================================
 # LINE WEBHOOK (with signature verification)
 # ============================================================
@@ -578,7 +587,7 @@ def webhook():
         abort(403)
 
     body = request.get_json(silent=True)
-    print("Webhook:", body)
+    print("Webhook:", body, flush=True)
 
     try:
         events = body.get("events", []) if body else []
