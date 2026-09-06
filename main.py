@@ -13,7 +13,8 @@ LINE_USER_ID = os.getenv("LINE_USER_ID")
 
 GOLD_SYMBOL = "GC=F"
 
-last_alert = ""
+last_signal_alert = ""
+last_daily_alert = ""
 
 
 # =========================
@@ -130,7 +131,7 @@ def get_gold_data():
 
 def analyze_gold():
 
-    global last_alert
+    global last_signal_alert, last_signal_alert
 
     try:
 
@@ -260,19 +261,36 @@ def analyze_gold():
 
             daily_message = (
                 "🟢 GOLD DAILY ALERT\n\n"
+                f"gold: {price:.2f}\n"
+                f"Daily Stochastic K: {kd: .1f}\n"
+                f"Daily Stochastic D: {dd: .1f}\n\n"
                 "Daily Stochastic อยู่โซนต่ำและเริ่มหันขึ้น\n"
                 "📈 วันนี้ให้น้ำหนักฝั่ง BUY\n"
                 "⚠️ ระวังการ SELL สวน"
             )
 
-            if last_alert != daily_message:
+            if last_daily_alert != daily_message:
                 send_line(daily_message)
                 last_alert = daily_message
 
         # ป้องกันข้อความเดิมยิงซ้ำทุกนาที
-        if signal and signal != last_alert:
-            send_line(signal)
-            last_alert = signal
+        if signal:
+            if "SIDEWAY" in signal:
+                alert_key = "SIDEWAY"
+            elif "เตรียมรอ BUY" in signal:
+                alert_key = "PREPARE BUY"
+            elif "BUY SIGNAL" in signal:
+                alert_key = "BUY"
+            elif "เตรียมรอ SELL" in signal:
+                alert_key = "PREPARE SELL"
+            elif "SELL SIGNAL" in signal:
+                alert_key = "SELL"
+            else:
+                alert_key = signal
+            if alert_key != last_alert:
+                send_line(signal)
+                last_alert = alert_key
+            
 
         print(
             f"GOLD {price:.2f} | "
