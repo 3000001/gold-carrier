@@ -1,4 +1,5 @@
 from flask import Flask, request
+from line_notify import send_line
 
 app = Flask(__name__)
 
