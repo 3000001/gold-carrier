@@ -22,7 +22,13 @@ app = Flask(__name__)
 # ============================================================
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")  # ใช้ตรวจสอบ webhook signature
-LINE_USER_ID = os.getenv("LINE_USER_ID")
+LINE_USER_IDS = [
+    user_id.strip()
+    for user_id in os.getenv("LINE_USER_IDS", "").split(",")
+    if user_id.strip()
+]
+
+print(f"👥 LINE recipients configured: {len(LINE_USER_IDS)}")
 
 GOLD_SYMBOL = "GC=F"
 CHECK_INTERVAL = 60          # ตรวจตลาดทุก 60 วินาที
@@ -108,39 +114,73 @@ def send_line(message):
     if not LINE_CHANNEL_ACCESS_TOKEN:
         print("❌ ไม่มี LINE_CHANNEL_ACCESS_TOKEN")
         return False
-    if not LINE_USER_ID:
-        print("❌ ไม่มี LINE_USER_ID")
+
+    if not LINE_USER_IDS:
+        print("❌ ไม่มี LINE_USER_IDS")
         return False
 
     url = "https://api.line.me/v2/bot/message/push"
+
     headers = {
         "Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}",
         "Content-Type": "application/json",
     }
-    data = {
-        "to": LINE_USER_ID,
-        "messages": [{"type": "text", "text": message}],
-    }
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=20)
-        print("LINE:", response.status_code, response.text)
-        return response.status_code == 200
-    except Exception as e:
-        print("❌ LINE ERROR:", e)
-        return False
+
+    all_ok = True
+
+    for user_id in LINE_USER_IDS:
+        data = {
+            "to": user_id,
+            "messages": [
+                {
+                    "type": "text",
+                    "text": message
+                }
+            ],
+        }
+
+        try:
+            response = requests.post(
+                url,
+                headers=headers,
+                json=data,
+                timeout=20
+            )
+
+            print(
+                f"LINE -> {user_id[:6]}... :",
+                response.status_code,
+                response.text
+            )
+
+            if response.status_code != 200:
+                all_ok = False
+
+        except Exception as e:
+            print(f"❌ LINE ERROR -> {user_id[:6]}... :", e)
+            all_ok = False
+
+    return all_ok
 
 
+# ============================================================
+# LINE WEBHOOK SIGNATURE
+# ============================================================
 def verify_line_signature(body_bytes, signature_header):
-    """ตรวจสอบว่า request มาจาก LINE จริง ป้องกันคนภายนอกยิง webhook ปลอม"""
+    """ตรวจสอบว่า request มาจาก LINE จริง ป้องกัน webhook ปลอม"""
     if not LINE_CHANNEL_SECRET:
-        # ไม่ได้ตั้ง secret ไว้ -> ข้ามการตรวจสอบ (ไม่แนะนำใน production)
         print("⚠️ LINE_CHANNEL_SECRET ไม่ถูกตั้งค่า — ข้ามการตรวจสอบ signature")
         return True
+
     if not signature_header:
         return False
+
     hash_digest = hmac.new(
-        LINE_CHANNEL_SECRET.encode("utf-8"), body_bytes, hashlib.sha256
+        LINE_CHANNEL_SECRET.encode("utf-8"),
+        body_bytes,
+        hashlib.sha256,
     ).digest()
+
     expected_signature = base64.b64encode(hash_digest).decode("utf-8")
     return hmac.compare_digest(expected_signature, signature_header)
 
@@ -567,7 +607,7 @@ def health():
 
 @app.route("/test-line", methods=["GET"])
 def test_line():
-    """ยิงข้อความทดสอบเข้า LINE เพื่อเช็คว่าตั้งค่า token/user id ถูกต้อง"""
+    """ยิงข้อความทดสอบเข้า LINE ทุก User ID เพื่อเช็คว่า token/user ids ถูกต้อง"""
     ok = send_line("✅ ทดสอบ Trading Alert\nเชื่อมต่อ LINE สำเร็จ")
     if ok:
         return "LINE SENT", 200
