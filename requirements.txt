@@ -1,5 +1,5 @@
-flask
-requests
+Flask
 gunicorn
-yfinance
+requests
 pandas
+tvdatafeed
