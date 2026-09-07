@@ -32,8 +32,6 @@ print(f"👥 LINE recipients configured: {len(LINE_USER_IDS)}")
 
 GOLD_SYMBOL = "XAUUSD"
 TRADINGVIEW_EXCHANGE = "OANDA"
-TV_USERNAME = os.getenv("TRADINGVIEW_USERNAME")
-TV_PASSWORD = os.getenv("TRADINGVIEW_PASSWORD")
 CHECK_INTERVAL = 60          # ตรวจตลาดทุก 60 วินาที
 ALERT_COOLDOWN = 15 * 60     # สัญญาณประเภทเดิมอย่างน้อย 15 นาที
 SIDEWAY_THRESHOLD = 0.30     # % ช่วงแกว่ง 15M
@@ -315,28 +313,22 @@ _tv = None
 
 def get_tradingview_client():
     """
-    สร้าง TradingView client แบบ lazy initialization
+    สร้าง TradingView client แบบ no-login เท่านั้น
 
-    ถ้าตั้ง TRADINGVIEW_USERNAME / TRADINGVIEW_PASSWORD ใน Render Environment
-    จะใช้บัญชีนั้นในการเชื่อมต่อ หากไม่ได้ตั้งค่า จะใช้ no-login mode
-    ซึ่งอาจถูก TradingView จำกัดข้อมูลบางสัญลักษณ์/บางช่วงเวลาได้
+    แหล่งราคาหลักยังเป็น GOLD SPOT XAU/USD ของ OANDA ที่แสดงบน TradingView
+    (OANDA:XAUUSD) แต่ไม่ใช้ username/password ของ TradingView เพื่อหลีกเลี่ยง
+    ปัญหา signin บน Render.
     """
     global _tv
 
     if _tv is not None:
         return _tv
 
-    if TV_USERNAME and TV_PASSWORD:
-        print("📡 TradingView: login mode", flush=True)
-        _tv = TvDatafeed(TV_USERNAME, TV_PASSWORD)
-    else:
-        print(
-            "⚠️ TradingView: no-login mode — แนะนำตั้ง "
-            "TRADINGVIEW_USERNAME และ TRADINGVIEW_PASSWORD ใน Render",
-            flush=True,
-        )
-        _tv = TvDatafeed()
-
+    print(
+        "📡 Market data: TradingView feed OANDA:XAUUSD (no-login)",
+        flush=True,
+    )
+    _tv = TvDatafeed()
     return _tv
 
 
@@ -753,7 +745,14 @@ def home():
 
 @app.route("/health", methods=["GET"])
 def health():
-    return {"status": "ok", "service": "Gold Spot XAU/USD Trading Alert", "symbol": f"{TRADINGVIEW_EXCHANGE}:{GOLD_SYMBOL}", "source": "TradingView"}, 200
+    return {
+        "status": "ok",
+        "service": "Gold Spot XAU/USD Trading Alert",
+        "symbol": f"{TRADINGVIEW_EXCHANGE}:{GOLD_SYMBOL}",
+        "price_feed": "TradingView",
+        "market": "OANDA:XAUUSD",
+        "tradingview_login": False,
+    }, 200
 
 
 @app.route("/test-line", methods=["GET"])
