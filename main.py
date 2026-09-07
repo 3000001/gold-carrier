@@ -11,8 +11,8 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 import requests
-import yfinance as yf
 import pandas as pd
+from tvDatafeed import TvDatafeed, Interval
 from flask import Flask, request, abort
 
 app = Flask(__name__)
@@ -30,7 +30,10 @@ LINE_USER_IDS = [
 
 print(f"👥 LINE recipients configured: {len(LINE_USER_IDS)}")
 
-GOLD_SYMBOL = "GC=F"
+GOLD_SYMBOL = "XAUUSD"
+TRADINGVIEW_EXCHANGE = "OANDA"
+TV_USERNAME = os.getenv("TRADINGVIEW_USERNAME")
+TV_PASSWORD = os.getenv("TRADINGVIEW_PASSWORD")
 CHECK_INTERVAL = 60          # ตรวจตลาดทุก 60 วินาที
 ALERT_COOLDOWN = 15 * 60     # สัญญาณประเภทเดิมอย่างน้อย 15 นาที
 SIDEWAY_THRESHOLD = 0.30     # % ช่วงแกว่ง 15M
@@ -44,9 +47,8 @@ TZ = ZoneInfo("Asia/Bangkok")
 DB_PATH = os.getenv("STATE_DB_PATH", "/tmp/gold_alert_state.db")
 LOCK_PATH = os.getenv("LOCK_FILE_PATH", "/tmp/gold_alert_bot.lock")
 
-YF_MAX_RETRIES = 3
-YF_TIMEOUT_SEC = 15
-YF_BACKOFF_BASE = 3  # seconds, doubles each retry
+TV_MAX_RETRIES = 3
+TV_BACKOFF_BASE = 3
 
 # ============================================================
 # PERSISTENT STATE (sqlite) — survives restarts, unlike plain globals
@@ -306,59 +308,118 @@ def detect_rsi_divergence(df, lookback=100):
 
 
 # ============================================================
-# MARKET DATA (with retry/backoff + timeout)
+# MARKET DATA — TradingView OANDA:XAUUSD (PRIMARY SOURCE)
 # ============================================================
-def clean_yfinance(df):
+_tv = None
+
+
+def get_tradingview_client():
+    """
+    สร้าง TradingView client แบบ lazy initialization
+
+    ถ้าตั้ง TRADINGVIEW_USERNAME / TRADINGVIEW_PASSWORD ใน Render Environment
+    จะใช้บัญชีนั้นในการเชื่อมต่อ หากไม่ได้ตั้งค่า จะใช้ no-login mode
+    ซึ่งอาจถูก TradingView จำกัดข้อมูลบางสัญลักษณ์/บางช่วงเวลาได้
+    """
+    global _tv
+
+    if _tv is not None:
+        return _tv
+
+    if TV_USERNAME and TV_PASSWORD:
+        print("📡 TradingView: login mode", flush=True)
+        _tv = TvDatafeed(TV_USERNAME, TV_PASSWORD)
+    else:
+        print(
+            "⚠️ TradingView: no-login mode — แนะนำตั้ง "
+            "TRADINGVIEW_USERNAME และ TRADINGVIEW_PASSWORD ใน Render",
+            flush=True,
+        )
+        _tv = TvDatafeed()
+
+    return _tv
+
+
+def clean_tradingview(df):
     if df is None or df.empty:
-        return df
-    if isinstance(df.columns, pd.MultiIndex):
-        df.columns = df.columns.get_level_values(0)
-    return df.dropna(subset=["Open", "High", "Low", "Close"]).copy()
+        return None
+
+    data = df.copy()
+    data = data.rename(
+        columns={
+            "open": "Open",
+            "high": "High",
+            "low": "Low",
+            "close": "Close",
+            "volume": "Volume",
+        }
+    )
+
+    required = ["Open", "High", "Low", "Close"]
+    missing = [col for col in required if col not in data.columns]
+    if missing:
+        print(f"❌ TradingView dataframe ขาด columns: {missing}", flush=True)
+        return None
+
+    return data.dropna(subset=required).copy()
 
 
-def download_with_retry(symbol, period, interval):
+def download_tradingview(interval, n_bars):
+    global _tv
     last_error = None
-    for attempt in range(1, YF_MAX_RETRIES + 1):
+
+    for attempt in range(1, TV_MAX_RETRIES + 1):
         try:
-            df = yf.download(
-                symbol,
-                period=period,
+            tv = get_tradingview_client()
+            df = tv.get_hist(
+                symbol=GOLD_SYMBOL,
+                exchange=TRADINGVIEW_EXCHANGE,
                 interval=interval,
-                progress=False,
-                auto_adjust=False,
-                threads=False,
-                timeout=YF_TIMEOUT_SEC,
+                n_bars=n_bars,
+                extended_session=False,
             )
-            df = clean_yfinance(df)
+
+            df = clean_tradingview(df)
             if df is not None and not df.empty:
                 return df
+
             last_error = "empty dataframe"
+
         except Exception as e:
             last_error = e
+            _tv = None
 
-        if attempt < YF_MAX_RETRIES:
-            wait = YF_BACKOFF_BASE * (2 ** (attempt - 1))
+        if attempt < TV_MAX_RETRIES:
+            wait = TV_BACKOFF_BASE * (2 ** (attempt - 1))
             print(
-                f"⚠️ yfinance ดึงข้อมูล {symbol} {interval} ล้มเหลว "
-                f"(ครั้งที่ {attempt}/{YF_MAX_RETRIES}): {last_error} "
-                f"— รอ {wait}s แล้วลองใหม่"
+                f"⚠️ TradingView {TRADINGVIEW_EXCHANGE}:{GOLD_SYMBOL} "
+                f"ดึงข้อมูลล้มเหลว (ครั้งที่ {attempt}/{TV_MAX_RETRIES}): "
+                f"{last_error} — รอ {wait}s แล้วลองใหม่",
+                flush=True,
             )
             time.sleep(wait)
 
-    print(f"❌ ดึงข้อมูล {symbol} {interval} ไม่สำเร็จหลังลอง {YF_MAX_RETRIES} ครั้ง: {last_error}")
+    print(
+        f"❌ TradingView {TRADINGVIEW_EXCHANGE}:{GOLD_SYMBOL} "
+        f"ดึงข้อมูลไม่สำเร็จหลังลอง {TV_MAX_RETRIES} ครั้ง: {last_error}",
+        flush=True,
+    )
     return None
 
 
 def get_gold_data():
     """
-    ดึงข้อมูล GOLD จาก Yahoo Finance
+    GOLD ทั้งระบบอิง TradingView OANDA:XAUUSD
 
-    1M ใช้ย้อนหลัง 5 วันแทน 1 วัน เพื่อให้มี historical bars สำรอง
-    ในช่วงตลาดปิด/วันหยุดที่ Yahoo อาจคืน no price data found สำหรับ period=1d
+    1M    -> TradingView 1 minute
+    15M   -> TradingView 15 minute
+    Daily -> TradingView daily
+
+    ไม่มี fallback ไป GC=F / Gold Futures
     """
-    df1 = download_with_retry(GOLD_SYMBOL, period="5d", interval="1m")
-    df15 = download_with_retry(GOLD_SYMBOL, period="5d", interval="15m")
-    daily = download_with_retry(GOLD_SYMBOL, period="6mo", interval="1d")
+    df1 = download_tradingview(Interval.in_1_minute, n_bars=600)
+    df15 = download_tradingview(Interval.in_15_minute, n_bars=600)
+    daily = download_tradingview(Interval.in_daily, n_bars=220)
 
     if df1 is None or df15 is None or daily is None:
         return None, None, None
@@ -393,7 +454,7 @@ def analyze_gold():
     try:
         df1, df15, daily = get_gold_data()
         if df1 is None:
-            print("❌ ดึงข้อมูล GOLD ไม่สำเร็จ ข้ามรอบนี้")
+            print(f"❌ ดึงข้อมูล GOLD SPOT ({GOLD_SYMBOL}) ไม่สำเร็จ ข้ามรอบนี้")
             return
 
         # ------------------------------------------------
@@ -448,7 +509,7 @@ def analyze_gold():
         if bullish_div and not last_bull_div:
             send_line(
                 "🟢 GOLD M15 BULLISH DIVERGENCE\n\n"
-                f"💰 ราคาปัจจุบัน: {price:.2f}\n"
+                f"💰 ราคา Gold Spot XAU/USD: {price:.2f}\n"
                 f"15M RSI: {rsi15:.1f}\n"
                 f"15M Stoch K/D: {k15:.1f}/{d15:.1f}\n\n"
                 "✅ ราคาเกิด Lower Low\n"
@@ -460,7 +521,7 @@ def analyze_gold():
         if bearish_div and not last_bear_div:
             send_line(
                 "🔴 GOLD M15 BEARISH DIVERGENCE\n\n"
-                f"💰 ราคาปัจจุบัน: {price:.2f}\n"
+                f"💰 ราคา Gold Spot XAU/USD: {price:.2f}\n"
                 f"15M RSI: {rsi15:.1f}\n"
                 f"15M Stoch K/D: {k15:.1f}/{d15:.1f}\n\n"
                 "✅ ราคาเกิด Higher High\n"
@@ -504,7 +565,7 @@ def analyze_gold():
             if daily_state == "BUY":
                 send_line(
                     "🟢 GOLD DAILY BIAS\n\n"
-                    f"💰 ราคา: {price:.2f}\n"
+                    f"💰 ราคา Gold Spot XAU/USD: {price:.2f}\n"
                     f"Daily Stoch K: {kd:.1f}\n"
                     f"Daily Stoch D: {dd:.1f}\n"
                     f"Daily RSI: {rsi_daily:.1f}\n\n"
@@ -514,7 +575,7 @@ def analyze_gold():
             elif daily_state == "SELL":
                 send_line(
                     "🔴 GOLD DAILY BIAS\n\n"
-                    f"💰 ราคา: {price:.2f}\n"
+                    f"💰 ราคา Gold Spot XAU/USD: {price:.2f}\n"
                     f"Daily Stoch K: {kd:.1f}\n"
                     f"Daily Stoch D: {dd:.1f}\n"
                     f"Daily RSI: {rsi_daily:.1f}\n\n"
@@ -533,7 +594,7 @@ def analyze_gold():
             signal_type = "SIDEWAY"
             message = (
                 "🚫 GOLD SIDEWAY\n\n"
-                f"💰 ราคา: {price:.2f}\n"
+                f"💰 ราคา Gold Spot XAU/USD: {price:.2f}\n"
                 f"ช่วงแกว่ง 15M: {movement_percent:.2f}%\n\n"
                 "ตลาดยังไม่มี Trend ชัดเจน\n"
                 "⛔ ยังไม่เข้า รอสัญญาณใหม่"
@@ -548,7 +609,7 @@ def analyze_gold():
             )
             message = (
                 "🟡 GOLD เตรียมรอ BUY\n\n"
-                f"💰 ราคา: {price:.2f}\n"
+                f"💰 ราคา Gold Spot XAU/USD: {price:.2f}\n"
                 f"15M Stoch K: {k15:.1f}\n"
                 f"15M RSI: {rsi15:.1f}\n"
                 f"{div_text}\n\n"
@@ -562,7 +623,7 @@ def analyze_gold():
                 tp = price + atr15 * ATR_TP_MULT
                 message = (
                     "🟢 GOLD BUY SIGNAL\n\n"
-                    f"💰 BUY บริเวณ: {price:.2f}\n"
+                    f"💰 BUY Gold Spot บริเวณ: {price:.2f}\n"
                     f"🛑 SL (ATR15 x{ATR_SL_MULT}): {sl:.2f}\n"
                     f"🎯 TP (ATR15 x{ATR_TP_MULT}): {tp:.2f}\n\n"
                     f"1M Stoch K/D: {k1:.1f}/{d1:.1f}\n"
@@ -585,7 +646,7 @@ def analyze_gold():
             )
             message = (
                 "🟠 GOLD เตรียมรอ SELL\n\n"
-                f"💰 ราคา: {price:.2f}\n"
+                f"💰 ราคา Gold Spot XAU/USD: {price:.2f}\n"
                 f"15M Stoch K: {k15:.1f}\n"
                 f"15M RSI: {rsi15:.1f}\n"
                 f"{div_text}\n\n"
@@ -599,7 +660,7 @@ def analyze_gold():
                 tp = price - atr15 * ATR_TP_MULT
                 message = (
                     "🔴 GOLD SELL SIGNAL\n\n"
-                    f"💰 SELL บริเวณ: {price:.2f}\n"
+                    f"💰 SELL Gold Spot บริเวณ: {price:.2f}\n"
                     f"🛑 SL (ATR15 x{ATR_SL_MULT}): {sl:.2f}\n"
                     f"🎯 TP (ATR15 x{ATR_TP_MULT}): {tp:.2f}\n\n"
                     f"1M Stoch K/D: {k1:.1f}/{d1:.1f}\n"
@@ -628,7 +689,7 @@ def analyze_gold():
         now_text = datetime.now(TZ).strftime("%Y-%m-%d %H:%M:%S %Z")
         print(
             f"[{now_text}] "
-            f"GOLD={price:.2f} | "
+            f"OANDA:XAUUSD={price:.2f} | "
             f"15M K={k15:.1f} D={d15:.1f} RSI={rsi15:.1f} | "
             f"1M K={k1:.1f} D={d1:.1f} RSI={rsi1:.1f} | "
             f"BULL_DIV={bullish_div} | "
@@ -654,7 +715,7 @@ def trading_loop():
     # แจ้ง LINE เมื่อบอทเริ่มทำงาน
     send_line(
         "🟢 Trading Alert เริ่มทำงานแล้ว\n"
-        "ระบบกำลังตรวจสอบ GOLD อัตโนมัติ"
+        f"ระบบกำลังตรวจสอบ GOLD SPOT XAU/USD ({TRADINGVIEW_EXCHANGE}:{GOLD_SYMBOL}) อัตโนมัติ"
     )
 
     last_heartbeat = time.time()
@@ -687,12 +748,12 @@ def trading_loop():
 # ============================================================
 @app.route("/", methods=["GET"])
 def home():
-    return "Gold Trading Alert is running", 200
+    return f"Gold Spot XAU/USD Trading Alert is running ({TRADINGVIEW_EXCHANGE}:{GOLD_SYMBOL})", 200
 
 
 @app.route("/health", methods=["GET"])
 def health():
-    return {"status": "ok", "service": "Gold Trading Alert"}, 200
+    return {"status": "ok", "service": "Gold Spot XAU/USD Trading Alert", "symbol": f"{TRADINGVIEW_EXCHANGE}:{GOLD_SYMBOL}", "source": "TradingView"}, 200
 
 
 @app.route("/test-line", methods=["GET"])
