@@ -587,14 +587,39 @@ def analyze_gold():
 # TRADING LOOP
 # ============================================================
 def trading_loop():
-    print("🚀 GOLD TRADING ALERT STARTED")
-    time.sleep(10)  # รอ Flask/Render เริ่มก่อน
+    print("🚀 GOLD TRADING ALERT STARTED", flush=True)
+
+    # รอให้ Render เริ่มระบบก่อน
+    time.sleep(10)
+
+    # แจ้ง LINE เมื่อบอทเริ่มทำงาน
+    send_line(
+        "🟢 Trading Alert เริ่มทำงานแล้ว\n"
+        "ระบบกำลังตรวจสอบ GOLD อัตโนมัติ"
+    )
+
+    last_heartbeat = time.time()
+
     while True:
         try:
             analyze_gold()
+
+            # ส่ง Heartbeat ทุก 1 ชั่วโมง
+            if time.time() - last_heartbeat >= 3600:
+                now_text = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
+
+                send_line(
+                    "💚 Trading Alert ยังทำงานปกติ\n"
+                    f"⏰ {now_text}\n"
+                    "กำลังตรวจสอบ GOLD ต่อเนื่อง"
+                )
+
+                last_heartbeat = time.time()
+
         except Exception as e:
-            print("❌ LOOP ERROR:", e)
+            print("❌ LOOP ERROR:", e, flush=True)
             traceback.print_exc()
+
         time.sleep(CHECK_INTERVAL)
 
 
