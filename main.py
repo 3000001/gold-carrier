@@ -246,36 +246,61 @@ def find_pivots(series, window=PIVOT_WINDOW):
 
 def detect_rsi_divergence(df, lookback=100):
     """
-    Bullish divergence: Price ทำ Lower Low, RSI ทำ Higher Low
-    Bearish divergence: Price ทำ Higher High, RSI ทำ Lower High
+    หา Regular RSI Divergence บน M15
+
+    Bullish: ราคา Lower Low แต่ RSI Higher Low
+    Bearish: ราคา Higher High แต่ RSI Lower High
+
+    เวอร์ชันนี้ไม่ดูเฉพาะ pivot 2 จุดล่าสุด เพราะอาจมี pivot เล็กคั่นกลาง
+    จนทำให้ divergence ที่เห็นชัดบนกราฟถูกพลาดไป
     """
     if len(df) < 40:
         return False, False
 
     data = df.tail(lookback).copy()
-    price_lows, _ = find_pivots(data["Low"])
-    _, price_highs = find_pivots(data["High"])
+
+    # window=2 ไวขึ้นกว่าเดิมเล็กน้อย แต่ยังต้องมีแท่งยืนยันซ้าย/ขวา
+    price_lows, _ = find_pivots(data["Low"], window=2)
+    _, price_highs = find_pivots(data["High"], window=2)
 
     bullish = False
     bearish = False
 
-    if len(price_lows) >= 2:
-        p1, p2 = price_lows[-2], price_lows[-1]
-        price1 = float(data["Low"].iloc[p1])
-        price2 = float(data["Low"].iloc[p2])
-        rsi1 = float(data["RSI"].iloc[p1])
-        rsi2 = float(data["RSI"].iloc[p2])
-        if price2 < price1 and rsi2 > rsi1 and rsi1 < 50 and rsi2 < 55:
-            bullish = True
+    # ตรวจ pivot หลายคู่ย้อนหลัง ไม่ใช่แค่ 2 จุดสุดท้าย
+    recent_lows = price_lows[-8:]
+    for a in range(len(recent_lows) - 1):
+        for b in range(a + 1, len(recent_lows)):
+            p1, p2 = recent_lows[a], recent_lows[b]
+            # ไม่เอาจุดที่ห่างกันมากเกินไปหรือชิดกันเกินไป
+            bars_apart = p2 - p1
+            if bars_apart < 3 or bars_apart > 40:
+                continue
 
-    if len(price_highs) >= 2:
-        p1, p2 = price_highs[-2], price_highs[-1]
-        price1 = float(data["High"].iloc[p1])
-        price2 = float(data["High"].iloc[p2])
-        rsi1 = float(data["RSI"].iloc[p1])
-        rsi2 = float(data["RSI"].iloc[p2])
-        if price2 > price1 and rsi2 < rsi1 and rsi1 > 50 and rsi2 > 45:
-            bearish = True
+            price1 = float(data["Low"].iloc[p1])
+            price2 = float(data["Low"].iloc[p2])
+            rsi1 = float(data["RSI"].iloc[p1])
+            rsi2 = float(data["RSI"].iloc[p2])
+
+            # ต้องเป็น Lower Low จริง และ RSI สูงขึ้นอย่างน้อย 1 จุด
+            if price2 < price1 and rsi2 >= rsi1 + 1.0 and min(rsi1, rsi2) < 50:
+                bullish = True
+
+    recent_highs = price_highs[-8:]
+    for a in range(len(recent_highs) - 1):
+        for b in range(a + 1, len(recent_highs)):
+            p1, p2 = recent_highs[a], recent_highs[b]
+            bars_apart = p2 - p1
+            if bars_apart < 3 or bars_apart > 40:
+                continue
+
+            price1 = float(data["High"].iloc[p1])
+            price2 = float(data["High"].iloc[p2])
+            rsi1 = float(data["RSI"].iloc[p1])
+            rsi2 = float(data["RSI"].iloc[p2])
+
+            # ต้องเป็น Higher High จริง และ RSI ต่ำลงอย่างน้อย 1 จุด
+            if price2 > price1 and rsi2 <= rsi1 - 1.0 and max(rsi1, rsi2) > 50:
+                bearish = True
 
     return bullish, bearish
 
@@ -412,6 +437,40 @@ def analyze_gold():
         rsi_daily = float(daily["RSI"].iloc[-1])
 
         bullish_div, bearish_div = detect_rsi_divergence(df15)
+
+        # ------------------------------------------------
+        # DIVERGENCE PRE-ALERT — แจ้งทันที ไม่ต้องรอ Stochastic/1M
+        # ส่งครั้งเดียวตอนสถานะเปลี่ยน False -> True และจะ reset เมื่อ divergence หาย
+        # ------------------------------------------------
+        last_bull_div = bool(get_state("bull_div_active", False))
+        last_bear_div = bool(get_state("bear_div_active", False))
+
+        if bullish_div and not last_bull_div:
+            send_line(
+                "🟢 GOLD M15 BULLISH DIVERGENCE\n\n"
+                f"💰 ราคาปัจจุบัน: {price:.2f}\n"
+                f"15M RSI: {rsi15:.1f}\n"
+                f"15M Stoch K/D: {k15:.1f}/{d15:.1f}\n\n"
+                "✅ ราคาเกิด Lower Low\n"
+                "✅ RSI เกิด Higher Low\n\n"
+                "🔔 เตรียมรอ BUY — ยังไม่ใช่คำสั่งเข้า\n"
+                "รอ 1M / Stochastic ยืนยันจุดเข้าอีกครั้ง"
+            )
+
+        if bearish_div and not last_bear_div:
+            send_line(
+                "🔴 GOLD M15 BEARISH DIVERGENCE\n\n"
+                f"💰 ราคาปัจจุบัน: {price:.2f}\n"
+                f"15M RSI: {rsi15:.1f}\n"
+                f"15M Stoch K/D: {k15:.1f}/{d15:.1f}\n\n"
+                "✅ ราคาเกิด Higher High\n"
+                "✅ RSI เกิด Lower High\n\n"
+                "🔔 เตรียมรอ SELL — ยังไม่ใช่คำสั่งเข้า\n"
+                "รอ 1M / Stochastic ยืนยันจุดเข้าอีกครั้ง"
+            )
+
+        set_state("bull_div_active", bullish_div)
+        set_state("bear_div_active", bearish_div)
 
         # ------------------------------------------------
         # SIDEWAY FILTER
