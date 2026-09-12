@@ -246,61 +246,69 @@ def find_pivots(series, window=PIVOT_WINDOW):
 
 def detect_rsi_divergence(df, lookback=100):
     """
-    หา Regular RSI Divergence บน M15
+    หา Regular RSI Divergence บน M15 โดยยึดคู่ pivot ล่าสุดที่ยัง relevant
 
     Bullish: ราคา Lower Low แต่ RSI Higher Low
     Bearish: ราคา Higher High แต่ RSI Lower High
 
-    เวอร์ชันนี้ไม่ดูเฉพาะ pivot 2 จุดล่าสุด เพราะอาจมี pivot เล็กคั่นกลาง
-    จนทำให้ divergence ที่เห็นชัดบนกราฟถูกพลาดไป
+    ใช้เฉพาะ pivot 2 จุดล่าสุดของฝั่ง low/high และกำหนดอายุของ pivot ล่าสุด
+    เพื่อลดโอกาสที่ BULL_DIV และ BEAR_DIV จะเป็น True พร้อมกันจากคู่เก่า ๆ
     """
     if len(df) < 40:
         return False, False
 
     data = df.tail(lookback).copy()
-
-    # window=2 ไวขึ้นกว่าเดิมเล็กน้อย แต่ยังต้องมีแท่งยืนยันซ้าย/ขวา
-    price_lows, _ = find_pivots(data["Low"], window=2)
-    _, price_highs = find_pivots(data["High"], window=2)
+    price_lows, price_highs = find_pivots(data["Low"], window=2)
+    _, high_pivots = find_pivots(data["High"], window=2)
 
     bullish = False
     bearish = False
 
-    # ตรวจ pivot หลายคู่ย้อนหลัง ไม่ใช่แค่ 2 จุดสุดท้าย
-    recent_lows = price_lows[-8:]
-    for a in range(len(recent_lows) - 1):
-        for b in range(a + 1, len(recent_lows)):
-            p1, p2 = recent_lows[a], recent_lows[b]
-            # ไม่เอาจุดที่ห่างกันมากเกินไปหรือชิดกันเกินไป
-            bars_apart = p2 - p1
-            if bars_apart < 3 or bars_apart > 40:
-                continue
+    # Divergence ต้องมาจาก pivot ล่าสุดที่ไม่เก่าเกินไป
+    max_age_bars = 12
 
+    if len(price_lows) >= 2:
+        p1, p2 = price_lows[-2], price_lows[-1]
+        bars_apart = p2 - p1
+        latest_age = len(data) - 1 - p2
+        if 3 <= bars_apart <= 40 and latest_age <= max_age_bars:
             price1 = float(data["Low"].iloc[p1])
             price2 = float(data["Low"].iloc[p2])
             rsi1 = float(data["RSI"].iloc[p1])
             rsi2 = float(data["RSI"].iloc[p2])
+            bullish = (
+                price2 < price1
+                and rsi2 >= rsi1 + 1.0
+                and min(rsi1, rsi2) < 50
+            )
 
-            # ต้องเป็น Lower Low จริง และ RSI สูงขึ้นอย่างน้อย 1 จุด
-            if price2 < price1 and rsi2 >= rsi1 + 1.0 and min(rsi1, rsi2) < 50:
-                bullish = True
-
-    recent_highs = price_highs[-8:]
-    for a in range(len(recent_highs) - 1):
-        for b in range(a + 1, len(recent_highs)):
-            p1, p2 = recent_highs[a], recent_highs[b]
-            bars_apart = p2 - p1
-            if bars_apart < 3 or bars_apart > 40:
-                continue
-
+    if len(high_pivots) >= 2:
+        p1, p2 = high_pivots[-2], high_pivots[-1]
+        bars_apart = p2 - p1
+        latest_age = len(data) - 1 - p2
+        if 3 <= bars_apart <= 40 and latest_age <= max_age_bars:
             price1 = float(data["High"].iloc[p1])
             price2 = float(data["High"].iloc[p2])
             rsi1 = float(data["RSI"].iloc[p1])
             rsi2 = float(data["RSI"].iloc[p2])
+            bearish = (
+                price2 > price1
+                and rsi2 <= rsi1 - 1.0
+                and max(rsi1, rsi2) > 50
+            )
 
-            # ต้องเป็น Higher High จริง และ RSI ต่ำลงอย่างน้อย 1 จุด
-            if price2 > price1 and rsi2 <= rsi1 - 1.0 and max(rsi1, rsi2) > 50:
-                bearish = True
+    # ถ้าเกิดพร้อมกันจริง ให้เลือกฝั่งที่ pivot ล่าสุดกว่า
+    if bullish and bearish:
+        last_low = price_lows[-1] if price_lows else -1
+        last_high = high_pivots[-1] if high_pivots else -1
+        if last_low > last_high:
+            bearish = False
+        elif last_high > last_low:
+            bullish = False
+        else:
+            # ถ้าเวลาเท่ากัน ให้ยังไม่แจ้งจนกว่าจะชัดเจน
+            bullish = False
+            bearish = False
 
     return bullish, bearish
 
@@ -423,17 +431,13 @@ def get_gold_data():
 # ALERT CONTROL (backed by persistent state)
 # ============================================================
 def should_send_signal(signal_type):
+    """Cooldown แยกตามชนิดสัญญาณ เพื่อไม่ให้ NORMAL รีเซ็ตแล้วส่งซ้ำถี่ ๆ"""
     now = time.time()
-    last_signal_type = get_state("last_signal_type")
-    last_signal_time = get_state("last_signal_time", 0)
-
-    if signal_type != last_signal_type:
-        set_state("last_signal_type", signal_type)
-        set_state("last_signal_time", now)
-        return True
+    key = f"last_signal_time:{signal_type}"
+    last_signal_time = get_state(key, 0)
 
     if now - last_signal_time >= ALERT_COOLDOWN:
-        set_state("last_signal_time", now)
+        set_state(key, now)
         return True
 
     return False
@@ -672,9 +676,6 @@ def analyze_gold():
         if signal_type != "NORMAL" and message and should_send_signal(signal_type):
             send_line(message)
 
-        if signal_type == "NORMAL":
-            set_state("last_signal_type", None)
-
         # ------------------------------------------------
         # LOG
         # ------------------------------------------------
@@ -704,10 +705,10 @@ def trading_loop():
     # รอให้ Render เริ่มระบบก่อน
     time.sleep(10)
 
-    # แจ้ง LINE เมื่อบอทเริ่มทำงาน
-    send_line(
-        "🟢 Trading Alert เริ่มทำงานแล้ว\n"
-        f"ระบบกำลังตรวจสอบ GOLD SPOT XAU/USD ({TRADINGVIEW_EXCHANGE}:{GOLD_SYMBOL}) อัตโนมัติ"
+    # ไม่ส่ง LINE ตอนเริ่มระบบ เพื่อลดการใช้โควต้า
+    print(
+        f"🟢 Trading Alert online: {TRADINGVIEW_EXCHANGE}:{GOLD_SYMBOL}",
+        flush=True,
     )
 
     last_heartbeat = time.time()
@@ -716,16 +717,10 @@ def trading_loop():
         try:
             analyze_gold()
 
-            # ส่ง Heartbeat ทุก 1 ชั่วโมง
+            # Heartbeat เก็บใน Render log เท่านั้น ไม่ส่ง LINE เพื่อประหยัดโควต้า
             if time.time() - last_heartbeat >= 3600:
                 now_text = datetime.now(TZ).strftime("%d/%m/%Y %H:%M")
-
-                send_line(
-                    "💚 Trading Alert ยังทำงานปกติ\n"
-                    f"⏰ {now_text}\n"
-                    "กำลังตรวจสอบ GOLD ต่อเนื่อง"
-                )
-
+                print(f"💚 HEARTBEAT {now_text} - Trading Alert ยังทำงานปกติ", flush=True)
                 last_heartbeat = time.time()
 
         except Exception as e:
